@@ -10,46 +10,46 @@
 ##   muninn          — daemon: poll GitHub, write snapshot + digest;
 ##   muninn status   — render a table from the last snapshot (no network).
 ##
-## Watches: PRs (merged / open), stars, forks, foreign PRs,
-##          notifications, followers. Diffs against the previous run.
-##
-## Configuration via environment:
-##   MUNINN_USER   — whose GitHub to watch   (default a-rybnikov)
-##   MUNINN_HOME   — where snapshot/digest go (default ~/.config/muninn)
-##   GITHUB_TOKEN  — token; else read from ~/.config/gh/hosts.yml
+## Environment:
+##   MUNINN_USER   — whose GitHub to watch (default: the token's owner)
+##   MUNINN_HOME   — where state lives     (default: ~/.config/muninn)
+##   GITHUB_TOKEN  — API token; falls back to the GitHub CLI's token
 ## The token is never written to a log.
 ##
 ## Build:  nim c -d:release -d:ssl --hints:off muninn.nim
 
-import std/[os, json, strutils, strformat, httpclient, unicode, times]
+import std/[os, json, strutils, strformat, httpclient, times]
 
 let
-  user = getEnv("MUNINN_USER", "a-rybnikov")
-  home = getEnv("MUNINN_HOME", getConfigDir() / "muninn")
+  userCfg = getEnv("MUNINN_USER", "")
+  home    = getEnv("MUNINN_HOME", getConfigDir() / "muninn")
 
 const
   Base  = "https://api.github.com/"
-  Title = "𝔪𝔲𝔫𝔦𝔫𝔫"                          # Fraktur; swap to "muninn" if it breaks
+  Title = "M U N I N N"
   Quote = "»Doch bangt mir mehr um Munin.«"   # Grimnismal 20
 
-# -- Token: from env, else from gh config. Never logged. -----------
+# -- Token: from env, else from the GitHub CLI's config. Never logged.
 proc readToken(): string =
   result = getEnv("GITHUB_TOKEN")
   if result.len > 0: return
-  let hosts = getHomeDir() / ".config" / "gh" / "hosts.yml"
-  if fileExists(hosts):
-    for line in lines(hosts):
+  let cli = getHomeDir() / ".config" / "gh" / "hosts.yml"
+  if fileExists(cli):
+    for line in lines(cli):
       if "oauth_token:" in line:
         return line.split("oauth_token:", 1)[1].strip()
 
-# -- One question to GitHub. Any failure becomes emptiness. ---------
 proc ask(http: HttpClient, path: string): JsonNode =
+  ## One question to GitHub. Any failure becomes emptiness.
   try: http.getContent(Base & path).parseJson
   except CatchableError: newJNull()
 
-# -- Tidy field access (safe against nil and wrong type) ------------
+# Tidy field access, safe against nil and wrong type.
 func num(n: JsonNode, k: string): int = n{k}.getInt(0)
 func str(n: JsonNode, k: string): string = n{k}.getStr("")
+func arrLen(n: JsonNode, k: string): int =
+  let v = n{k}
+  if not v.isNil and v.kind == JArray: v.len else: 0
 
 # ======================== DAEMON ==================================
 proc gather() =
@@ -59,6 +59,9 @@ proc gather() =
     "Accept": "application/vnd.github+json",
     "User-Agent": "muninn"}))
   defer: http.close()
+
+  # default to the token's own user when MUNINN_USER is unset
+  let user = if userCfg.len > 0: userCfg else: http.ask("user").str("login")
 
   let merged  = http.ask(&"search/issues?q=author:{user}+type:pr+is:merged&sort=updated&per_page=5")
   let openPRs = http.ask(&"search/issues?q=author:{user}+type:pr+is:open&per_page=10")
@@ -73,8 +76,7 @@ proc gather() =
   var newest = "—"
   if merged.kind == JObject and merged{"items"}.len > 0:
     let top = merged["items"][0]
-    let n = top.num("number")
-    newest = top.str("repository_url").rsplit("/repos/", 1)[^1] & "#" & $n
+    newest = top.str("repository_url").rsplit("/repos/", 1)[^1] & "#" & $top.num("number")
 
   var stars, forks: int
   var foreign: seq[string]
@@ -90,8 +92,7 @@ proc gather() =
             let who = p{"user", "login"}.getStr("")
             if who.len > 0 and who != user:
               let t = p.str("title")
-              let pn = p.num("number")
-              foreign.add(&"{name}#{pn} by @{who}: " & t[0 ..< min(50, t.len)])
+              foreign.add(&"{name}#{p.num(\"number\")} by @{who}: " & t[0 ..< min(50, t.len)])
 
   var was = newJObject()
   if fileExists(home / "state.json"):
@@ -100,7 +101,7 @@ proc gather() =
   template grew(now: int, key: string): int =
     (if was.hasKey(key): now - was.num(key) else: 0)
   var prevForeign: seq[string]
-  if was{"ext_prs"}.kind == JArray:
+  if was{"ext_prs"} != nil and was["ext_prs"].kind == JArray:
     for e in was["ext_prs"]: prevForeign.add(e.getStr(""))
   var fresh: seq[string]
   for p in foreign:
@@ -138,11 +139,6 @@ proc gather() =
   echo headline
 
 # ======================== CLI =====================================
-proc row(label, value: string, note = ""): string =
-  let pad = repeat(" ", max(0, 14 - label.runeLen))
-  result = "    " & label & pad & align(value, 4)
-  if note.len > 0: result &= "   " & note
-
 proc status() =
   var s = newJObject()
   if fileExists(home / "state.json"):
@@ -151,22 +147,24 @@ proc status() =
   var hb = "—"
   if fileExists(home / "heartbeat"):
     hb = getLastModificationTime(home / "heartbeat").local.format("yyyy-MM-dd HH:mm")
+
+  proc r(sect, metric, value: string, note = ""): string =
+    result = "   " & alignLeft(sect, 14) & alignLeft(metric, 15) & align(value, 3)
+    if note.len > 0: result &= "   " & note
+
   let rule = "  " & repeat("─", 48)
   echo ""
   echo rule
   echo "  " & Title
-  echo "  " & Quote
+  echo "  " & Quote & "   — Grímnismál 20"
   echo rule
-  echo "   pr"
-  echo row("merged", $s.num("merged_total"), "latest: " & s.str("newest_merge"))
-  echo row("open", $s.num("open_total"))
-  echo "   repositories"
-  echo row("stars", $s.num("stars"))
-  echo row("forks", $s.num("forks"))
-  echo row("foreign pr", $(if s{"ext_prs"}.kind == JArray: s["ext_prs"].len else: 0))
-  echo "   incoming"
-  echo row("notifications", $s.num("notifs"))
-  echo row("followers", $s.num("followers"))
+  echo r("pr", "merged", $s.num("merged_total"), s.str("newest_merge"))
+  echo r("", "open", $s.num("open_total"))
+  echo r("repositories", "stars", $s.num("stars"))
+  echo r("", "forks", $s.num("forks"))
+  echo r("", "foreign pr", $s.arrLen("ext_prs"))
+  echo r("incoming", "notifications", $s.num("notifs"))
+  echo r("", "followers", $s.num("followers"))
   echo ""
   echo "  snapshot " & hb
   echo ""
