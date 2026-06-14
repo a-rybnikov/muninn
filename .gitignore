@@ -1,0 +1,9 @@
+# собранный бинарь и артефакты Nim
+/muninn
+nimcache/
+*.o
+# рантайм-данные (живут в $MUNINN_HOME, не в репо)
+state.json
+digest.md
+heartbeat
+logs/
