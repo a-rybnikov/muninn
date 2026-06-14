@@ -1,27 +1,25 @@
-## ╔══════════════════════════════════════════════════════════════╗
-## ║  muninn — тихий ангел, наблюдатель GitHub-активности.          ║
-## ║                                                                ║
-## ║  «Huginn ok Muninn fljúga hverjan dag …» — Grímnismál 20.       ║
-## ║  Мунин — ворон Одина по имени «Память»: облетает мир и          ║
-## ║  возвращается с вестями. Этот демон делает то же с GitHub.     ║
-## ╚══════════════════════════════════════════════════════════════╝
+## muninn — a quiet watcher of GitHub activity.
 ##
-## Чистый Nim: std/httpclient + std/json. Внешних процессов нет.
+## "Huginn ok Muninn fljuga hverjan dag ..." — Grimnismal 20.
+## Muninn, Odin's raven named "Memory", flies the world each day
+## and returns with news. This little daemon does the same with GitHub.
 ##
-## Два режима одного бинаря:
-##   muninn           — демон: спросить GitHub, записать дайджест+снимок;
-##   muninn status    — нарисовать таблицу из последнего снимка (без сети).
+## Pure Nim: std/httpclient + std/json. No external processes.
 ##
-## Следит: PR (смёрджено/открыто), звёзды, форки, чужие PR,
-##         уведомления, подписчики. Сравнивает с прошлым разом (дельта).
+## Two modes of one binary:
+##   muninn          — daemon: poll GitHub, write snapshot + digest;
+##   muninn status   — render a table from the last snapshot (no network).
 ##
-## Настройка через окружение:
-##   MUNINN_USER  — чей GitHub наблюдать (по умолч. a-rybnikov);
-##   MUNINN_HOME  — куда писать снимок/дайджест (по умолч. ~/.config/muninn);
-##   GITHUB_TOKEN — токен; иначе берётся из ~/.config/gh/hosts.yml.
-## Токен НИКОГДА не попадает в лог.
+## Watches: PRs (merged / open), stars, forks, foreign PRs,
+##          notifications, followers. Diffs against the previous run.
 ##
-## Сборка:  nim c -d:release -d:ssl --hints:off muninn.nim
+## Configuration via environment:
+##   MUNINN_USER   — whose GitHub to watch   (default a-rybnikov)
+##   MUNINN_HOME   — where snapshot/digest go (default ~/.config/muninn)
+##   GITHUB_TOKEN  — token; else read from ~/.config/gh/hosts.yml
+## The token is never written to a log.
+##
+## Build:  nim c -d:release -d:ssl --hints:off muninn.nim
 
 import std/[os, json, strutils, strformat, httpclient, unicode, times]
 
@@ -31,10 +29,10 @@ let
 
 const
   Base  = "https://api.github.com/"
-  # подзаголовок (Эдда; можно заменить любой строкой)
-  Quote = "«Der Gedanke fliegt aus, das Gedächtnis kehrt heim.»"
+  Title = "𝔪𝔲𝔫𝔦𝔫𝔫"                          # Fraktur; swap to "muninn" if it breaks
+  Quote = "»Doch bangt mir mehr um Munin.«"   # Grimnismal 20
 
-# ── Токен: из окружения, иначе из конфига gh. В лог не пишем. ───────
+# -- Token: from env, else from gh config. Never logged. -----------
 proc readToken(): string =
   result = getEnv("GITHUB_TOKEN")
   if result.len > 0: return
@@ -44,16 +42,16 @@ proc readToken(): string =
       if "oauth_token:" in line:
         return line.split("oauth_token:", 1)[1].strip()
 
-# ── Один вопрос к GitHub. На любой сбой — пустота. ─────────────────
+# -- One question to GitHub. Any failure becomes emptiness. ---------
 proc ask(http: HttpClient, path: string): JsonNode =
   try: http.getContent(Base & path).parseJson
   except CatchableError: newJNull()
 
-# ── Опрятный доступ к полю (безопасен к nil и чужому типу) ─────────
+# -- Tidy field access (safe against nil and wrong type) ------------
 func num(n: JsonNode, k: string): int = n{k}.getInt(0)
 func str(n: JsonNode, k: string): string = n{k}.getStr("")
 
-# ════════════════════════ ДЕМОН ═══════════════════════════════════
+# ======================== DAEMON ==================================
 proc gather() =
   createDir(home)
   let http = newHttpClient(headers = newHttpHeaders({
@@ -93,7 +91,7 @@ proc gather() =
             if who.len > 0 and who != user:
               let t = p.str("title")
               let pn = p.num("number")
-              foreign.add(&"{name}#{pn} от @{who}: " & t[0 ..< min(50, t.len)])
+              foreign.add(&"{name}#{pn} by @{who}: " & t[0 ..< min(50, t.len)])
 
   var was = newJObject()
   if fileExists(home / "state.json"):
@@ -114,21 +112,21 @@ proc gather() =
   let dF = grew(forks, "forks")
   let dN = grew(notifCount, "notifs")
   let dFo = grew(followers, "followers")
-  if dM > 0: flags.add(&"🎉 +{dM} НОВЫЙ мёрдж (последний: {newest})")
-  if dS > 0: flags.add(&"⭐ +{dS} новых звёзд")
-  if dF > 0: flags.add(&"🔱 +{dF} новых форков")
-  if fresh.len > 0: flags.add(&"📥 ЧУЖОЙ PR: {fresh.len}")
-  if dN > 0: flags.add(&"✉ +{dN} уведомлений")
-  if dFo > 0: flags.add(&"👤 +{dFo} подписчиков")
-  let headline = if flags.len > 0: flags.join(" · ") else: "без изменений с прошлого прогона"
+  if dM > 0: flags.add(&"merge +{dM} (latest: {newest})")
+  if dS > 0: flags.add(&"stars +{dS}")
+  if dF > 0: flags.add(&"forks +{dF}")
+  if fresh.len > 0: flags.add(&"foreign pr: {fresh.len}")
+  if dN > 0: flags.add(&"notifications +{dN}")
+  if dFo > 0: flags.add(&"followers +{dFo}")
+  let headline = if flags.len > 0: flags.join(" · ") else: "no change since last run"
 
   var lines = @[
-    "# muninn — дайджест", "", "**" & headline & "**", "",
-    &"- PR смёрджено всего: {mergedTotal} (последний: {newest})",
-    &"- PR открыто: {openTotal}",
-    &"- звёзды: {stars} · форки: {forks}",
-    &"- уведомления: {notifCount} · подписчики: {followers}",
-    &"- чужие открытые PR: {foreign.len}"]
+    "# muninn — digest", "", "**" & headline & "**", "",
+    &"- merged PRs total: {mergedTotal} (latest: {newest})",
+    &"- open PRs: {openTotal}",
+    &"- stars: {stars} · forks: {forks}",
+    &"- notifications: {notifCount} · followers: {followers}",
+    &"- foreign open PRs: {foreign.len}"]
   for p in foreign: lines.add "    • " & p
   writeFile(home / "digest.md", lines.join("\n") & "\n")
 
@@ -139,9 +137,8 @@ proc gather() =
   writeFile(home / "heartbeat", "")
   echo headline
 
-# ════════════════════════ CLI ═════════════════════════════════════
+# ======================== CLI =====================================
 proc row(label, value: string, note = ""): string =
-  # выравниваем по РУНАМ (кириллица в UTF-8 = 2 байта/символ)
   let pad = repeat(" ", max(0, 14 - label.runeLen))
   result = "    " & label & pad & align(value, 4)
   if note.len > 0: result &= "   " & note
@@ -154,22 +151,24 @@ proc status() =
   var hb = "—"
   if fileExists(home / "heartbeat"):
     hb = getLastModificationTime(home / "heartbeat").local.format("yyyy-MM-dd HH:mm")
+  let rule = "  " & repeat("─", 48)
   echo ""
-  echo "  muninn"
+  echo rule
+  echo "  " & Title
   echo "  " & Quote
-  echo "  " & repeat("─", 46)
-  echo "   PR"
-  echo row("смёрджено", $s.num("merged_total"), "последний: " & s.str("newest_merge"))
-  echo row("открыто", $s.num("open_total"))
-  echo "   репозитории"
-  echo row("звёзды", $s.num("stars"))
-  echo row("форки", $s.num("forks"))
-  echo row("чужие PR", $(if s{"ext_prs"}.kind == JArray: s["ext_prs"].len else: 0))
-  echo "   входящее"
-  echo row("уведомления", $s.num("notifs"))
-  echo row("подписчики", $s.num("followers"))
+  echo rule
+  echo "   pr"
+  echo row("merged", $s.num("merged_total"), "latest: " & s.str("newest_merge"))
+  echo row("open", $s.num("open_total"))
+  echo "   repositories"
+  echo row("stars", $s.num("stars"))
+  echo row("forks", $s.num("forks"))
+  echo row("foreign pr", $(if s{"ext_prs"}.kind == JArray: s["ext_prs"].len else: 0))
+  echo "   incoming"
+  echo row("notifications", $s.num("notifs"))
+  echo row("followers", $s.num("followers"))
   echo ""
-  echo "  снимок: " & hb
+  echo "  snapshot " & hb
   echo ""
 
 when isMainModule:
