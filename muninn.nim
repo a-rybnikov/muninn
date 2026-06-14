@@ -30,6 +30,7 @@ const
   Quote  = "»Doch bangt mir mehr um Munin.«"   # Grimnismal 20
   Source = "Grímnismál 20"
   Width  = 50                                   # inner banner width
+  Rule   = "  " & repeat("─", Width - 2)
 
 proc readToken(): string =
   ## from env, else from the GitHub CLI's config. Never logged.
@@ -153,21 +154,25 @@ proc status() =
     try: s = readFile(home / "state.json").parseJson
     except CatchableError: discard
 
-  let rule = "  " & repeat("─", Width - 2)
   echo ""
-  echo rule
+  echo Rule
   echo repeat(" ", 17) & Title
   echo "   " & Quote & " " & Source
-  echo rule
+  echo Rule
 
+  echo "   pull requests"
+  echo Rule
+  echo ""
   let newMerges = s.list("new_merges")
-  echo "   pr"
   echo kv("merged", "total", $s.num("merged_total"))
   echo kv("", "new", $newMerges.len)
   for m in newMerges: echo sub(m)
   echo kv("open", "total", $s.num("open_total"))
   echo ""
+
   echo "   repositories"
+  echo Rule
+  echo ""
   echo kv("stars", "total", $s.num("stars"))
   if s.num("d_stars") > 0: echo kv("", "new", "+" & $s.num("d_stars"))
   echo kv("forks", "total", $s.num("forks"))
@@ -178,21 +183,19 @@ proc status() =
     echo kv("", "new", $newForeign.len)
     for f in newForeign: echo sub(f)
   echo ""
-  echo "   incoming"
-  echo kv("notifications", "total", $s.num("notifs"))
-  if s.num("d_notifs") > 0: echo kv("", "new", "+" & $s.num("d_notifs"))
-  echo kv("followers", "total", $s.num("followers"))
-  if s.num("d_followers") > 0: echo kv("", "new", "+" & $s.num("d_followers"))
 
   # silent reminder: time since the user's PREVIOUS manual look.
   # separate file per channel (cli/gui/bot) — no clash with the daemon.
   let poke = home / "poke_cli"
-  let note = if fileExists(poke):
-               "you last looked " & humanAgo(now() - getLastModificationTime(poke).local)
-             else: "first look"
+  let val = if fileExists(poke):
+              humanAgo(now() - getLastModificationTime(poke).local)
+            else: "first time"
   writeFile(poke, "")
+  echo Rule
+  echo "   last looked: " & val
   echo ""
-  echo "   " & note
+  echo ""
+  echo Rule
   echo ""
 
 when isMainModule:
