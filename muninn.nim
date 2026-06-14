@@ -18,19 +18,21 @@
 ##
 ## Build:  nim c -d:release -d:ssl --hints:off muninn.nim
 
-import std/[os, json, strutils, strformat, httpclient, times]
+import std/[os, json, strutils, strformat, httpclient, unicode, times]
 
 let
   userCfg = getEnv("MUNINN_USER", "")
   home    = getEnv("MUNINN_HOME", getConfigDir() / "muninn")
 
 const
-  Base  = "https://api.github.com/"
-  Title = "M U N I N N"
-  Quote = "»Doch bangt mir mehr um Munin.«"   # Grimnismal 20
+  Base   = "https://api.github.com/"
+  Title  = "M U N I N N"
+  Quote  = "»Doch bangt mir mehr um Munin.«"   # Grimnismal 20
+  Source = "Grímnismál 20"
+  Width  = 50                                   # inner banner width
 
-# -- Token: from env, else from the GitHub CLI's config. Never logged.
 proc readToken(): string =
+  ## from env, else from the GitHub CLI's config. Never logged.
   result = getEnv("GITHUB_TOKEN")
   if result.len > 0: return
   let cli = getHomeDir() / ".config" / "gh" / "hosts.yml"
@@ -44,12 +46,12 @@ proc ask(http: HttpClient, path: string): JsonNode =
   try: http.getContent(Base & path).parseJson
   except CatchableError: newJNull()
 
-# Tidy field access, safe against nil and wrong type.
 func num(n: JsonNode, k: string): int = n{k}.getInt(0)
 func str(n: JsonNode, k: string): string = n{k}.getStr("")
-func arrLen(n: JsonNode, k: string): int =
+func list(n: JsonNode, k: string): seq[string] =
   let v = n{k}
-  if not v.isNil and v.kind == JArray: v.len else: 0
+  if not v.isNil and v.kind == JArray:
+    for e in v: result.add e.getStr("")
 
 # ======================== DAEMON ==================================
 proc gather() =
@@ -60,10 +62,8 @@ proc gather() =
     "User-Agent": "muninn"}))
   defer: http.close()
 
-  # default to the token's own user when MUNINN_USER is unset
   let user = if userCfg.len > 0: userCfg else: http.ask("user").str("login")
-
-  let merged  = http.ask(&"search/issues?q=author:{user}+type:pr+is:merged&sort=updated&per_page=5")
+  let merged  = http.ask(&"search/issues?q=author:{user}+type:pr+is:merged&sort=updated&per_page=10")
   let openPRs = http.ask(&"search/issues?q=author:{user}+type:pr+is:open&per_page=10")
   let repos   = http.ask(&"users/{user}/repos?per_page=100&sort=updated")
   let notifs  = http.ask("notifications?per_page=50")
@@ -73,10 +73,12 @@ proc gather() =
   let openTotal   = openPRs.num("total_count")
   let notifCount  = (if notifs.kind == JArray: notifs.len else: 0)
   let followers   = me.num("followers")
-  var newest = "—"
-  if merged.kind == JObject and merged{"items"}.len > 0:
-    let top = merged["items"][0]
-    newest = top.str("repository_url").rsplit("/repos/", 1)[^1] & "#" & $top.num("number")
+
+  # recent merges as repo#num — so we can name what's NEW since last run
+  var mergedRecent: seq[string]
+  if merged.kind == JObject and merged{"items"} != nil:
+    for it in merged["items"]:
+      mergedRecent.add(it.str("repository_url").rsplit("/repos/", 1)[^1] & "#" & $it.num("number"))
 
   var stars, forks: int
   var foreign: seq[string]
@@ -92,81 +94,107 @@ proc gather() =
             let who = p{"user", "login"}.getStr("")
             if who.len > 0 and who != user:
               let t = p.str("title")
-              foreign.add(&"{name}#{p.num(\"number\")} by @{who}: " & t[0 ..< min(50, t.len)])
+              foreign.add(&"{name}#{p.num(\"number\")} by @{who}: " & t[0 ..< min(48, t.len)])
 
+  # previous snapshot → deltas and new-lists
   var was = newJObject()
   if fileExists(home / "state.json"):
     try: was = readFile(home / "state.json").parseJson
     except CatchableError: discard
   template grew(now: int, key: string): int =
     (if was.hasKey(key): now - was.num(key) else: 0)
-  var prevForeign: seq[string]
-  if was{"ext_prs"} != nil and was["ext_prs"].kind == JArray:
-    for e in was["ext_prs"]: prevForeign.add(e.getStr(""))
-  var fresh: seq[string]
-  for p in foreign:
-    if p notin prevForeign: fresh.add(p)
+  func freshly(cur, prev: seq[string]): seq[string] =
+    for x in cur:
+      if x notin prev: result.add x
+  # baseline on first run (no prior list) — don't flood with "new"
+  let newMerges  = (if was.hasKey("merged_recent"): freshly(mergedRecent, was.list("merged_recent")) else: @[])
+  let newForeign = (if was.hasKey("ext_prs"): freshly(foreign, was.list("ext_prs")) else: @[])
 
-  var flags: seq[string]
-  let dM = grew(mergedTotal, "merged_total")
-  let dS = grew(stars, "stars")
-  let dF = grew(forks, "forks")
-  let dN = grew(notifCount, "notifs")
-  let dFo = grew(followers, "followers")
-  if dM > 0: flags.add(&"merge +{dM} (latest: {newest})")
-  if dS > 0: flags.add(&"stars +{dS}")
-  if dF > 0: flags.add(&"forks +{dF}")
-  if fresh.len > 0: flags.add(&"foreign pr: {fresh.len}")
-  if dN > 0: flags.add(&"notifications +{dN}")
-  if dFo > 0: flags.add(&"followers +{dFo}")
-  let headline = if flags.len > 0: flags.join(" · ") else: "no change since last run"
-
-  var lines = @[
-    "# muninn — digest", "", "**" & headline & "**", "",
-    &"- merged PRs total: {mergedTotal} (latest: {newest})",
-    &"- open PRs: {openTotal}",
-    &"- stars: {stars} · forks: {forks}",
-    &"- notifications: {notifCount} · followers: {followers}",
-    &"- foreign open PRs: {foreign.len}"]
-  for p in foreign: lines.add "    • " & p
-  writeFile(home / "digest.md", lines.join("\n") & "\n")
-
-  writeFile(home / "state.json", (%* {
-    "merged_total": mergedTotal, "newest_merge": newest, "open_total": openTotal,
+  let snap = %* {
+    "merged_total": mergedTotal, "open_total": openTotal,
     "stars": stars, "forks": forks, "notifs": notifCount, "followers": followers,
-    "ext_prs": foreign}).pretty)
-  writeFile(home / "heartbeat", "")
+    "merged_recent": mergedRecent, "ext_prs": foreign,
+    "new_merges": newMerges, "new_foreign": newForeign,
+    "d_stars": grew(stars, "stars"), "d_forks": grew(forks, "forks"),
+    "d_notifs": grew(notifCount, "notifs"), "d_followers": grew(followers, "followers")}
+  writeFile(home / "state.json", snap.pretty)
+
+  # digest for the hook / bot (what's new since last poll)
+  var flags: seq[string]
+  if newMerges.len > 0: flags.add(&"merges +{newMerges.len}")
+  if grew(stars, "stars") > 0: flags.add(&"stars +{grew(stars, \"stars\")}")
+  if newForeign.len > 0: flags.add(&"foreign pr +{newForeign.len}")
+  if grew(notifCount, "notifs") > 0: flags.add(&"notifications +{grew(notifCount, \"notifs\")}")
+  if grew(followers, "followers") > 0: flags.add(&"followers +{grew(followers, \"followers\")}")
+  let headline = if flags.len > 0: flags.join(" · ") else: "no change since last run"
+  var d = @["# muninn — digest", "", "**" & headline & "**", ""]
+  for m in newMerges: d.add "- merged: " & m
+  for f in newForeign: d.add "- foreign: " & f
+  writeFile(home / "digest.md", d.join("\n") & "\n")
+  writeFile(home / "heartbeat", "")             # daemon run time (for the hook)
   echo headline
 
 # ======================== CLI =====================================
+proc kv(metric, tag, value: string): string =
+  "     " & alignLeft(metric, 14) & alignLeft(tag, 6) & align(value, 3)
+proc sub(name: string): string = repeat(" ", 19) & name
+
+proc humanAgo(d: Duration): string =
+  let days = d.inDays
+  let hours = d.inHours mod 24
+  let mins = d.inMinutes mod 60
+  if days > 0: &"{days}d {hours}h ago"
+  elif hours > 0: &"{hours}h {mins}m ago"
+  else: &"{mins}m ago"
+
 proc status() =
   var s = newJObject()
   if fileExists(home / "state.json"):
     try: s = readFile(home / "state.json").parseJson
     except CatchableError: discard
-  var hb = "—"
-  if fileExists(home / "heartbeat"):
-    hb = getLastModificationTime(home / "heartbeat").local.format("yyyy-MM-dd HH:mm")
 
-  proc r(sect, metric, value: string, note = ""): string =
-    result = "   " & alignLeft(sect, 14) & alignLeft(metric, 15) & align(value, 3)
-    if note.len > 0: result &= "   " & note
-
-  let rule = "  " & repeat("─", 48)
+  let rule = "  " & repeat("─", Width - 2)
+  let qline = "   " & Quote
+  let pad = max(1, Width - qline.runeLen - Source.runeLen - 1)
   echo ""
   echo rule
-  echo "  " & Title
-  echo "  " & Quote & "   — Grímnismál 20"
+  echo "   " & Title
+  echo qline & repeat(" ", pad) & Source
   echo rule
-  echo r("pr", "merged", $s.num("merged_total"), s.str("newest_merge"))
-  echo r("", "open", $s.num("open_total"))
-  echo r("repositories", "stars", $s.num("stars"))
-  echo r("", "forks", $s.num("forks"))
-  echo r("", "foreign pr", $s.arrLen("ext_prs"))
-  echo r("incoming", "notifications", $s.num("notifs"))
-  echo r("", "followers", $s.num("followers"))
+
+  let newMerges = s.list("new_merges")
+  echo "   pr"
+  echo kv("merged", "total", $s.num("merged_total"))
+  echo kv("", "new", $newMerges.len)
+  for m in newMerges: echo sub(m)
+  echo kv("open", "total", $s.num("open_total"))
+
+  echo "   repositories"
+  echo kv("stars", "total", $s.num("stars"))
+  if s.num("d_stars") > 0: echo kv("", "new", "+" & $s.num("d_stars"))
+  echo kv("forks", "total", $s.num("forks"))
+  if s.num("d_forks") > 0: echo kv("", "new", "+" & $s.num("d_forks"))
+  let newForeign = s.list("new_foreign")
+  echo kv("foreign pr", "total", $s.list("ext_prs").len)
+  if newForeign.len > 0:
+    echo kv("", "new", $newForeign.len)
+    for f in newForeign: echo sub(f)
+
+  echo "   incoming"
+  echo kv("notifications", "total", $s.num("notifs"))
+  if s.num("d_notifs") > 0: echo kv("", "new", "+" & $s.num("d_notifs"))
+  echo kv("followers", "total", $s.num("followers"))
+  if s.num("d_followers") > 0: echo kv("", "new", "+" & $s.num("d_followers"))
+
+  # silent reminder: time since the user's PREVIOUS manual look.
+  # separate file per channel (cli/gui/bot) — no clash with the daemon.
+  let poke = home / "poke_cli"
+  let note = if fileExists(poke):
+               "you last looked " & humanAgo(now() - getLastModificationTime(poke).local)
+             else: "first look"
+  writeFile(poke, "")
   echo ""
-  echo "  snapshot " & hb
+  echo "   " & note
   echo ""
 
 when isMainModule:
