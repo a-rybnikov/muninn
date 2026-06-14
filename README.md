@@ -18,8 +18,9 @@ table from the last snapshot — instantly, offline.
 
 ## What it watches / Что отслеживает
 
-Merged PRs · open PRs · stars · forks · **foreign PRs to your repos** ·
-notifications · followers — with a delta against the previous run.
+Merged & open PRs · stars · forks · **foreign PRs to your repos** — each
+with a delta (`new`) against the previous run. (The daemon's digest also
+flags new notifications for a bot/hook.)
 
 ## Build / Сборка
 
@@ -35,26 +36,38 @@ muninn status     # CLI: render the table from the last snapshot
 ```
 
 ```
-  muninn
-  «Der Gedanke fliegt aus, das Gedächtnis kehrt heim.»
-  ──────────────────────────────────────────────
-   PR
-    смёрджено       11   последний: nim-lang/Nim#25890
-    открыто          0
-   репозитории
-    звёзды           3
-   входящее
-    уведомления      4
-    подписчики      11
+  ────────────────────────────────────────────────
+                 M U N I N N
+   »Doch bangt mir mehr um Munin.« Grímnismál 20
+  ────────────────────────────────────────────────
+   pull requests
+  ────────────────────────────────────────────────
+
+     merged             total       11
+                        new          0
+     open               total        0
+
+   repositories
+  ────────────────────────────────────────────────
+
+     stars              total        3
+     forks              total        0
+     foreign pr         total        0
+
+  ────────────────────────────────────────────────
+   last looked: 17m ago
+
+
+  ────────────────────────────────────────────────
 ```
 
 ## Configure / Настройка (env)
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `MUNINN_USER`  | `a-rybnikov` | whose GitHub to watch |
+| `MUNINN_USER`  | the token's owner | whose GitHub to watch |
 | `MUNINN_HOME`  | `~/.config/muninn` | where snapshot/digest live |
-| `GITHUB_TOKEN` | from `~/.config/gh/hosts.yml` | API token (never logged) |
+| `GITHUB_TOKEN` | from the GitHub CLI | API token (never logged) |
 
 ## Deploy as a daemon / Демон (systemd)
 
