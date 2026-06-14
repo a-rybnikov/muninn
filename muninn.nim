@@ -18,7 +18,7 @@
 ##
 ## Build:  nim c -d:release -d:ssl --hints:off muninn.nim
 
-import std/[os, json, strutils, strformat, httpclient, unicode, times]
+import std/[os, json, strutils, strformat, httpclient, times]
 
 let
   userCfg = getEnv("MUNINN_USER", "")
@@ -136,8 +136,8 @@ proc gather() =
 
 # ======================== CLI =====================================
 proc kv(metric, tag, value: string): string =
-  "     " & alignLeft(metric, 14) & alignLeft(tag, 6) & align(value, 3)
-proc sub(name: string): string = repeat(" ", 19) & name
+  "     " & alignLeft(metric, 19) & alignLeft(tag, 11) & align(value, 3)
+proc sub(name: string): string = repeat(" ", 24) & name
 
 proc humanAgo(d: Duration): string =
   let days = d.inDays
@@ -154,12 +154,10 @@ proc status() =
     except CatchableError: discard
 
   let rule = "  " & repeat("─", Width - 2)
-  let qline = "   " & Quote
-  let pad = max(1, Width - qline.runeLen - Source.runeLen - 1)
   echo ""
   echo rule
-  echo "   " & Title
-  echo qline & repeat(" ", pad) & Source
+  echo repeat(" ", 17) & Title
+  echo "   " & Quote & " " & Source
   echo rule
 
   let newMerges = s.list("new_merges")
@@ -168,7 +166,7 @@ proc status() =
   echo kv("", "new", $newMerges.len)
   for m in newMerges: echo sub(m)
   echo kv("open", "total", $s.num("open_total"))
-
+  echo ""
   echo "   repositories"
   echo kv("stars", "total", $s.num("stars"))
   if s.num("d_stars") > 0: echo kv("", "new", "+" & $s.num("d_stars"))
@@ -179,7 +177,7 @@ proc status() =
   if newForeign.len > 0:
     echo kv("", "new", $newForeign.len)
     for f in newForeign: echo sub(f)
-
+  echo ""
   echo "   incoming"
   echo kv("notifications", "total", $s.num("notifs"))
   if s.num("d_notifs") > 0: echo kv("", "new", "+" & $s.num("d_notifs"))
