@@ -68,12 +68,10 @@ proc gather() =
   let openPRs = http.ask(&"search/issues?q=author:{user}+type:pr+is:open&per_page=10")
   let repos   = http.ask(&"users/{user}/repos?per_page=100&sort=updated")
   let notifs  = http.ask("notifications?per_page=50")
-  let me      = http.ask(&"users/{user}")
 
   let mergedTotal = merged.num("total_count")
   let openTotal   = openPRs.num("total_count")
   let notifCount  = (if notifs.kind == JArray: notifs.len else: 0)
-  let followers   = me.num("followers")
 
   # recent merges as repo#num — so we can name what's NEW since last run
   var mergedRecent: seq[string]
@@ -110,23 +108,23 @@ proc gather() =
   # baseline on first run (no prior list) — don't flood with "new"
   let newMerges  = (if was.hasKey("merged_recent"): freshly(mergedRecent, was.list("merged_recent")) else: @[])
   let newForeign = (if was.hasKey("ext_prs"): freshly(foreign, was.list("ext_prs")) else: @[])
+  let dStars  = grew(stars, "stars")
+  let dForks  = grew(forks, "forks")
+  let dNotifs = grew(notifCount, "notifs")
 
-  let snap = %* {
+  writeFile(home / "state.json", (%* {
     "merged_total": mergedTotal, "open_total": openTotal,
-    "stars": stars, "forks": forks, "notifs": notifCount, "followers": followers,
+    "stars": stars, "forks": forks, "notifs": notifCount,
     "merged_recent": mergedRecent, "ext_prs": foreign,
     "new_merges": newMerges, "new_foreign": newForeign,
-    "d_stars": grew(stars, "stars"), "d_forks": grew(forks, "forks"),
-    "d_notifs": grew(notifCount, "notifs"), "d_followers": grew(followers, "followers")}
-  writeFile(home / "state.json", snap.pretty)
+    "d_stars": dStars, "d_forks": dForks, "d_notifs": dNotifs}).pretty)
 
   # digest for the hook / bot (what's new since last poll)
   var flags: seq[string]
   if newMerges.len > 0: flags.add(&"merges +{newMerges.len}")
-  if grew(stars, "stars") > 0: flags.add(&"stars +{grew(stars, \"stars\")}")
+  if dStars > 0: flags.add(&"stars +{dStars}")
   if newForeign.len > 0: flags.add(&"foreign pr +{newForeign.len}")
-  if grew(notifCount, "notifs") > 0: flags.add(&"notifications +{grew(notifCount, \"notifs\")}")
-  if grew(followers, "followers") > 0: flags.add(&"followers +{grew(followers, \"followers\")}")
+  if dNotifs > 0: flags.add(&"notifications +{dNotifs}")
   let headline = if flags.len > 0: flags.join(" · ") else: "no change since last run"
   var d = @["# muninn — digest", "", "**" & headline & "**", ""]
   for m in newMerges: d.add "- merged: " & m
